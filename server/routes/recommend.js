@@ -29,49 +29,58 @@ const FOLLOWUP_TRIGGERS = [
   "continue", "yes", "please", "i want more", "recommend more"
 ];
 
-// LLM enrichment (optional)
-async function enrichReply(userMessage, tags, courses, intent, history = []) {
-  if (!process.env.GEMINI_API_KEY || process.env.USE_LLM !== "true") return null;
-  try {
-    const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-    const modelName = process.env.GEMINI_MODEL || "gemini-1.5-flash";
-    const model = genAI.getGenerativeModel({ model: modelName });
+// --- Gemini enrichment for course details ---
+// --- Gemini enrichment for course details with retry ---
+async function enrichDetailReply(course, baseAnswer, userMessage = "") {
+  if (!process.env.USE_LLM || process.env.USE_LLM !== "true") return baseAnswer;
 
-    const courseSummary = courses
-      .map((c, i) => `${i + 1}. ${c.course_title} — ${c.rating || "N/A"}⭐ (${c.num_reviews || 0} reviews)`)
-      .join("\n");
+  const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+  const model = genAI.getGenerativeModel({
+    model: process.env.GEMINI_MODEL || "gemini-1.5-flash",
+  });
 
-    const convoSnippet = history.slice(-6).map(h => `User: ${h.message}`).join("\n");
+  const prompt = `
+You are Mentora, a helpful learning assistant.
+The user asked: "${userMessage}"
+Here is the raw course info:
+Title: ${course.course_title}
+Provider: ${course.provider || "N/A"}
+Level: ${course.level || "N/A"}
+Price: ${course.price || "N/A"}
+Duration: ${course.content_duration || "N/A"}
+Rating: ${course.rating || "N/A"}
+Reviews: ${course.num_reviews || "N/A"}
+Subscribers: ${course.num_subscribers || "N/A"}
 
-    const prompt = `
-You are Mentora, a friendly learning assistant.
-Conversation context:
-${convoSnippet}
+Base Answer: ${baseAnswer}
 
-User asked: "${userMessage}"
-Detected intent: ${intent}
-Their skills/interests: ${tags.join(", ")}
+Rewrite this as a short, friendly conversational reply:
+- Natural phrasing (not robotic).
+- Highlight the course in a positive way.
+- Keep it under 4 sentences.
+- Add 1–2 emojis where natural.
+  `;
 
-Recommended courses:
-${courseSummary}
-
-Instructions:
-- If intent = greeting/smalltalk/farewell → reply casually, no courses.
-- If intent = recommend → highlight 2–3 courses in natural language and list each highlighted course on its own line.
-- If intent = question and DB lacks the exact field -> answer gracefully using general knowledge.
-- Keep under 5 sentences.
-- Use emojis naturally.
-    `;
-
-    const result = await model.generateContent(prompt);
-    // SDK may differ; handle both shapes
-    if (result?.response?.text) return result.response.text();
-    return result?.text || null;
-  } catch (err) {
-    console.error("Gemini error:", err);
-    return null;
+  let attempts = 0;
+  while (attempts < 3) {
+    try {
+      const result = await model.generateContent(prompt);
+      return result?.response?.text?.() || result?.response?.text || baseAnswer;
+    } catch (err) {
+      if (err.status === 503) {
+        attempts++;
+        console.warn(`Gemini overloaded, retrying... attempt ${attempts}`);
+        await new Promise(r => setTimeout(r, 500 * attempts)); // exponential backoff
+      } else {
+        console.error("Gemini enrichment error:", err);
+        break;
+      }
+    }
   }
+
+  return baseAnswer; // fallback if all retries fail
 }
+
 
 // helper: parse "tell me about 2" or "#3"
 function parseRequestedIndex(text) {
@@ -88,14 +97,13 @@ function parseRequestedIndex(text) {
 
 router.post("/chat", async (req, res) => {
   try {
-    // Use `let` so we can mutate message if we need to auto-build it
     let { message = "", skills = [], interests = [], userId: incomingUserId } = req.body;
     const userId = incomingUserId || "user1";
     const memory = ensureMemory(userId);
 
-    // If no message typed but user has chosen skills or interests -> auto-build a recommend query
+    // If no message but user has chosen skills/interests -> auto-build query
     if (!message || !message.trim()) {
-      if ((Array.isArray(skills) && skills.length > 0) || (Array.isArray(interests) && interests.length > 0)) {
+      if ((skills && skills.length) || (interests && interests.length)) {
         message = `recommend courses for ${skills.join(", ")} ${interests.join(", ")}`.trim();
       } else {
         return res.json({
@@ -105,11 +113,10 @@ router.post("/chat", async (req, res) => {
       }
     }
 
-    // ✅ only define once here, after fixing message
     const text = message.toLowerCase();
     const intent = detectIntent(message);
 
-    // 1) Follow-ups: explicit "more", "tell me more", etc.
+    // --- 1) Follow-ups ---
     const isFollowUp = FOLLOWUP_TRIGGERS.some(t => text.includes(t));
     if (isFollowUp && memory.lastCourses && memory.lastCourses.length) {
       const nextBatch = memory.lastCourses.slice(memory.lastOffset, memory.lastOffset + 5);
@@ -128,29 +135,36 @@ router.post("/chat", async (req, res) => {
           }))
         });
       } else {
-        return res.json({ reply: "🤔 You’ve already seen all the courses I found. Try a new topic or refine your interests.", courses: [] });
+        return res.json({
+          reply: "🤔 You’ve already seen all the courses I found. Try a new topic or refine your interests.",
+          courses: []
+        });
       }
     }
 
-    // 2) Ask about specific item by index: "tell me about 2"
+    // --- 2) Ask about specific course ---
     const requestedIndex = parseRequestedIndex(text);
     if (requestedIndex !== null && memory.lastCourses && memory.lastCourses.length > requestedIndex) {
       const course = memory.lastCourses[requestedIndex];
-      const parts = [];
-      if (course.level) parts.push(`Level: ${course.level}`);
-      if (course.content_duration) parts.push(`Duration: ${course.content_duration}`);
-      if (course.price !== undefined && course.price !== null) parts.push(`Price: ${course.price}`);
-      if (course.provider) parts.push(`Provider: ${course.provider}`);
 
-      let detailReply = `📘 ${course.course_title}\n${parts.join(" • ")}`;
-      if (parts.length < 2 && process.env.USE_LLM === "true") {
-        const gReply = await enrichReply(message, memory.lastTags, [course], "question", memory.history);
-        if (gReply) detailReply = gReply;
+      let baseReply = `📘 ${course.course_title}`;
+      const detailsParts = [];
+      if (course.level) detailsParts.push(`Level: ${course.level}`);
+      if (course.content_duration) detailsParts.push(`Duration: ${course.content_duration}`);
+      if (course.price !== undefined && course.price !== null) detailsParts.push(`Price: $${course.price}`);
+      if (course.provider) detailsParts.push(`Provider: ${course.provider}`);
+      baseReply += "\n" + detailsParts.join(" • ");
+
+      let detailReply = baseReply;
+      if (process.env.USE_LLM === "true") {
+        const enriched = await enrichDetailReply(course, baseReply, message);
+        if (enriched) detailReply = enriched;
       }
+
       return res.json({ reply: detailReply, courses: [] });
     }
 
-    // 3) greeting / smalltalk / farewell
+    // --- 3) Greetings / Smalltalk / Farewell ---
     if (intent === "greeting") return res.json({ reply: "👋 Hey! I’m Mentora — tell me your skills/interests and I’ll suggest courses.", courses: [] });
     if (intent === "smalltalk") return res.json({ reply: "🙂 I can help you find courses. Try: 'show me AI courses' or select skills on the left.", courses: [] });
     if (intent === "farewell") return res.json({ reply: "🙏 Good luck! Come back anytime to explore more courses.", courses: [] });
@@ -159,26 +173,54 @@ router.post("/chat", async (req, res) => {
     if (intent === "question") {
       const lastCourses = memory.lastCourses || [];
       if (lastCourses.length) {
-        const first = lastCourses[0];
+        // Try to detect which course user is asking about
+        let course = lastCourses[0]; // default first
+        const requestedIndex = parseRequestedIndex(text);
+        if (requestedIndex !== null && lastCourses[requestedIndex]) {
+          course = lastCourses[requestedIndex];
+        } else {
+          // fuzzy match by title keyword
+          for (const c of lastCourses) {
+            if (text.includes(c.course_title.toLowerCase().split(" ")[0])) {
+              course = c;
+              break;
+            }
+          }
+        }
 
         // Beginner/difficulty
-        if (message.toLowerCase().includes("beginner")) {
-          if (first.level) {
-            return res.json({ reply: `📘 "${first.course_title}" is suitable for ${first.level} learners.`, courses: [] });
+        if (text.includes("beginner") || text.includes("difficulty") || text.includes("level")) {
+          if (course.level) {
+            let baseAnswer = `📘 "${course.course_title}" is suitable for ${course.level} learners.`;
+            if (process.env.USE_LLM === "true") {
+              const enriched = await enrichDetailReply(course, baseAnswer, message);
+              if (enriched) baseAnswer = enriched;
+            }
+            return res.json({ reply: baseAnswer, courses: [] });
           }
         }
 
         // Duration
-        if (message.toLowerCase().includes("time") || message.toLowerCase().includes("duration")) {
-          if (first.content_duration) {
-            return res.json({ reply: `⏱️ "${first.course_title}" takes about ${first.content_duration} to complete.`, courses: [] });
+        if (text.includes("time") || text.includes("duration") || text.includes("long")) {
+          if (course.content_duration) {
+            let baseAnswer = `⏱️ "${course.course_title}" takes about ${course.content_duration} to complete.`;
+            if (process.env.USE_LLM === "true") {
+              const enriched = await enrichDetailReply(course, baseAnswer, message);
+              if (enriched) baseAnswer = enriched;
+            }
+            return res.json({ reply: baseAnswer, courses: [] });
           }
         }
 
         // Price
-        if (message.toLowerCase().includes("price") || message.toLowerCase().includes("cost")) {
-          if (first.price) {
-            return res.json({ reply: `💰 "${first.course_title}" costs around ${first.price}.`, courses: [] });
+        if (text.includes("price") || text.includes("cost") || text.includes("fee")) {
+          if (course.price !== undefined && course.price !== null) {
+            let baseAnswer = `💰 "${course.course_title}" costs around $${course.price}.`;
+            if (process.env.USE_LLM === "true") {
+              const enriched = await enrichDetailReply(course, baseAnswer, message);
+              if (enriched) baseAnswer = enriched;
+            }
+            return res.json({ reply: baseAnswer, courses: [] });
           }
         }
 
@@ -192,7 +234,8 @@ router.post("/chat", async (req, res) => {
       }
     }
 
-    // 5) if not recommend intent, treat short replies as potential follow-up (convenient UX)
+
+    // --- 5) If not recommend ---
     if (intent !== "recommend") {
       if (memory.lastIntent === "recommend" && text.length < 20) {
         const nextBatch = memory.lastCourses.slice(memory.lastOffset, memory.lastOffset + 5);
@@ -212,79 +255,48 @@ router.post("/chat", async (req, res) => {
       return res.json({ reply: "💡 You can ask 'I want to learn coding' or 'recommend AI courses'.", courses: [] });
     }
 
-
-
-    // --- At this point, intent === "recommend" -- proceed ---
-
-    // Normalize selected skills & interests using parser normalizeWord
+    // --- 6) Recommendation intent ---
     const normalizedSelectedSkills = (skills || []).map(s => normalizeWord((s || "").toString().toLowerCase().replace(/\s*\/\s*/g, "/")) || s.toString().toLowerCase()).filter(Boolean);
     const normalizedInterests = (interests || []).map(i => normalizeWord((i || "").toString().toLowerCase()) || i.toString().toLowerCase()).filter(Boolean);
 
-    // message tags (includes synonyms + expansions)
-    const messageTags = extractTags(message); // already normalized and expanded in parser
-
-    // Merge tags but keep selected skills primary
-    // mergedInterests = UI interests + messageTags (so message "i want to code" matters)
+    const messageTags = extractTags(message);
     const mergedInterests = [...new Set([...(normalizedInterests || []), ...(messageTags || [])])];
 
-    // If user explicitly asks about topic not in UI interests (e.g., marketing) propose a quick-reply to switch
     const explicitNewTopics = messageTags.filter(t => !normalizedInterests.includes(t) && !normalizedSelectedSkills.includes(t));
     const proposeSwitchQuickReplies = explicitNewTopics.slice(0, 3).map(t => `Switch interest to "${t}"`);
 
-    // Build search tags (use both skills and interests)
     const searchTags = [...new Set([...(normalizedSelectedSkills || []), ...mergedInterests])];
 
     if (!searchTags.length) {
-      // LLM can try to guess topic if enabled
-      if (process.env.USE_LLM === "true") {
-        const guess = await enrichReply(message, [], [], "recommend", memory.history);
-        if (guess) {
-          return res.json({ reply: `${guess}\nDo you want me to show courses for that?`, courses: [], quickReplies: ["Yes show courses", "No, something else"] });
-        }
-      }
       return res.json({ reply: "Sorry, I couldn't identify a topic. Try 'I want to learn AI' or select skills/interests.", courses: [] });
     }
 
-    // Query DB broadly (tags or skills match)
     const candidates = await Course.find({ $or: [{ tags: { $in: searchTags } }, { skills: { $in: searchTags } }] }).limit(200);
 
-    // Weighted scoring:
-    // - selected skills carry priority (0.6)
-    // - mergedInterests (UI interests + message tags) contribute (0.3)
-    // - synergy bonus if course matches messageTags (0.1) so "AI + code" preference works
     const scored = candidates.map(course => {
       let score = 0;
-
-      // normalize course arrays to lowercase
       const courseSkills = (course.skills || []).map(s => s.toLowerCase());
       const courseTags = (course.tags || []).map(t => t.toLowerCase());
 
-      // selected skills overlap (primary)
       const skillOverlap = (normalizedSelectedSkills || []).filter(s => courseSkills.includes(s) || courseTags.includes(s)).length;
       const skillDen = Math.max(1, (normalizedSelectedSkills || []).length);
       score += (skillOverlap / skillDen) * 0.6;
 
-      // interests (UI interests + message tags)
       const interestOverlap = (mergedInterests || []).filter(i => courseTags.includes(i) || courseSkills.includes(i)).length;
       const interestDen = Math.max(1, (mergedInterests || []).length);
       score += (interestOverlap / interestDen) * 0.3;
 
-      // synergy: emphasize courses that match messageTags (user typed "code")
       const messageOverlap = (messageTags || []).filter(m => courseTags.includes(m) || courseSkills.includes(m)).length;
       const messageDen = Math.max(1, (messageTags || []).length);
       score += (messageOverlap / messageDen) * 0.1;
 
-      // small popularity tie-breaker (rating)
       return { course, score };
     });
 
-    // sort by score desc, then rating desc
     scored.sort((a, b) => (b.score - a.score) || ((b.course.rating || 0) - (a.course.rating || 0)));
-
     const topCourses = scored.slice(0, 5).map(s => s.course);
 
     if (topCourses.length) {
-      // save memory
       memory.lastIntent = "recommend";
       memory.lastTags = searchTags;
       memory.lastCourses = candidates;
@@ -293,10 +305,8 @@ router.post("/chat", async (req, res) => {
       memory.history.push({ message, tags: searchTags });
       if (memory.history.length > 5) memory.history.shift();
 
-      // reply base text (we'll allow LLM to rephrase if enabled)
       let baseReply = `✨ Based on your selected skills and message, here are some top matches.${explicitNewTopics.length ? `\n💡 I also considered: ${explicitNewTopics.join(", ")}.` : ""}`;
 
-      // generate quickReplies: general follow-ups + item-specific + switch suggestions
       const quickReplies = [
         "Tell me more",
         "How long does this take?",
@@ -304,23 +314,13 @@ router.post("/chat", async (req, res) => {
         "Show me more"
       ];
 
-      // add item-specific quick replies: "Tell me about #1"
       topCourses.forEach((c, i) => {
         quickReplies.push(`Tell me about #${i + 1}`);
       });
-
-      // add switch suggestions if any
       proposeSwitchQuickReplies.forEach(s => quickReplies.push(s));
 
-      // optional LLM polish - include a small history snippet
-      let finalReply = baseReply;
-      if (process.env.USE_LLM === "true") {
-        const enriched = await enrichReply(message, searchTags, topCourses, "recommend", memory.history);
-        if (enriched) finalReply = enriched;
-      }
-
       return res.json({
-        reply: finalReply,
+        reply: baseReply,
         courses: topCourses.map(c => ({
           title: c.course_title,
           rating: c.rating,
@@ -328,7 +328,6 @@ router.post("/chat", async (req, res) => {
           url: c.url,
           level: c.level,
           price: c.price,
-
           duration: c.content_duration,
           provider: c.provider
         })),
@@ -336,11 +335,6 @@ router.post("/chat", async (req, res) => {
         history: memory.history
       });
     } else {
-      // optionally LLM suggest alternatives
-      if (process.env.USE_LLM === "true") {
-        const suggestion = await enrichReply(message, searchTags, [], "recommend", memory.history);
-        if (suggestion) return res.json({ reply: suggestion, courses: [], quickReplies: ["Try 'AI'", "Try 'coding'"] });
-      }
       return res.json({ reply: `Couldn't find good matches for ${searchTags.join(", ")}. Try adding or changing skills/interests.`, courses: [] });
     }
   } catch (err) {

@@ -12,8 +12,6 @@ export default function LandingPage() {
     "Marketing",
     "Business",
     "Data Science",
-    "Healthcare",
-    "Education",
     "Engineering",
     "Arts",
   ];
@@ -21,14 +19,10 @@ export default function LandingPage() {
   const interestsList = [
     "Technology",
     "Creative Arts",
-    "Healthcare",
     "Business",
     "Science",
     "Education",
-    "Social Impact",
     "Finance",
-    "Environment",
-    "Sports",
   ];
 
   const [skills, setSkills] = useState([]);
@@ -74,7 +68,6 @@ export default function LandingPage() {
 
   // helper to push bot message (with optional courses and quickReplies)
   const pushBotMessage = (payload) => {
-    // payload: { text, courses, quickReplies }
     setMessages((prev) => [
       ...prev,
       {
@@ -97,11 +90,10 @@ export default function LandingPage() {
           message: msgText,
           skills,
           interests,
-          userId, // persistent id
+          userId,
         }),
       });
       const data = await res.json();
-      // show bot reply (data.reply) and courses if any
       pushBotMessage({
         text: data.reply || "Hmm...",
         courses: data.courses || [],
@@ -121,7 +113,6 @@ export default function LandingPage() {
   const handleSend = async (e) => {
     e?.preventDefault?.();
 
-    // require at least one selection
     if (skills.length === 0 || interests.length === 0) {
       setMessages((prev) => [
         ...prev,
@@ -133,9 +124,7 @@ export default function LandingPage() {
       return;
     }
 
-    // If user didn't type anything but has selections -> send an auto-recommend request
     if (!input.trim()) {
-      // optional: show a small user message to indicate action
       setMessages((prev) => [
         ...prev,
         {
@@ -143,27 +132,21 @@ export default function LandingPage() {
           text: "(Show recommendations for selected skills/interests)",
         },
       ]);
-      // send empty message (backend will auto-build from skills/interests)
       await sendMessageToServer("");
       return;
     }
 
-    // normal typed message flow
-    const userMessage = { role: "user", text: input };
-    setMessages((prev) => [...prev, userMessage]);
-
+    pushUserMessage(input);
     await sendMessageToServer(input);
     setInput("");
   };
 
-  // quick reply click handler (auto sends the quick reply)
+  // quick reply click handler
   const handleQuickReply = async (replyText) => {
-    // If it's a suggestion like Switch interest to "marketing", we can parse it locally:
     const switchMatch = replyText.match(/^Switch interest to "?(.*)"?$/i);
     if (switchMatch) {
       const newInterest = switchMatch[1];
       if (newInterest) {
-        // add to interests (UI)
         setInterests((prev) =>
           prev.includes(newInterest) ? prev : [...prev, newInterest]
         );
@@ -173,7 +156,6 @@ export default function LandingPage() {
       }
     }
 
-    // otherwise, just send it as a user message
     pushUserMessage(replyText);
     await sendMessageToServer(replyText);
   };
@@ -190,12 +172,6 @@ export default function LandingPage() {
           ✨ Mentora
         </h1>
         <div className="flex gap-2">
-          {/* <button
-            onClick={() => navigate("/home")}
-            className=" bg-white  px-4 py-2 rounded-xl hover:bg-white/20 transition shadow-lg"
-          >
-            Book an Schedule
-          </button> */}
           <button
             onClick={() => navigate("/")}
             className="text-white bg-white/10 px-4 py-2 rounded-xl hover:bg-white/20 transition shadow-lg"
@@ -213,7 +189,7 @@ export default function LandingPage() {
 
       {/* Main Content */}
       <div className="flex flex-1 gap-6 px-6 pb-6">
-        {/* LEFT PANEL: Skills + Interests */}
+        {/* LEFT PANEL */}
         <motion.div
           initial={{ opacity: 0, x: -30 }}
           animate={{ opacity: 1, x: 0 }}
@@ -261,7 +237,7 @@ export default function LandingPage() {
           </div>
         </motion.div>
 
-        {/* RIGHT PANEL: Chat Area */}
+        {/* RIGHT PANEL: Chat */}
         <motion.div
           initial={{ opacity: 0, x: 30 }}
           animate={{ opacity: 1, x: 0 }}
@@ -279,24 +255,25 @@ export default function LandingPage() {
                 initial={{ opacity: 0, y: 10 }}
                 animate={{ opacity: 1, y: 0 }}
                 transition={{ duration: 0.3 }}
-                className={`my-2 max-w-2xl ${
+                className={`my-3 max-w-xl ${
                   msg.role === "user"
                     ? "self-end ml-auto"
                     : "self-start mr-auto"
                 }`}
               >
-                {/* bot message with courses */}
+                {/* BOT with courses */}
                 {msg.role === "bot" && msg.courses && msg.courses.length > 0 ? (
                   <div className="flex flex-col gap-3">
-                    <div className="bg-gray-200 text-gray-800 px-4 py-2 rounded-2xl shadow">
+                    <div className="bg-white/20 text-white px-5 py-3 rounded-2xl shadow-md backdrop-blur-sm border border-white/30">
                       {msg.text}
                     </div>
 
+                    {/* Course cards */}
                     <ul className="space-y-3 mt-2">
                       {msg.courses.map((course, i) => (
                         <li
                           key={i}
-                          className="bg-white/95 p-4 rounded-xl shadow-md border border-gray-200 flex justify-between items-start"
+                          className="bg-white p-4 rounded-xl shadow-md border border-gray-200 flex justify-between items-start"
                         >
                           <div>
                             <div className="flex items-center gap-2">
@@ -313,16 +290,15 @@ export default function LandingPage() {
                               {course.rating ? `${course.rating}⭐` : ""}{" "}
                               {course.reviews
                                 ? `(${course.reviews} reviews)`
-                                : ""}
+                                : ""}{" "}
                               {course.level ? ` • ${course.level}` : ""}{" "}
                               {course.duration ? ` • ${course.duration}` : ""}
                             </p>
-                            {course.price !== undefined &&
-                              course.price !== null && (
-                                <p className="text-sm text-gray-600 mt-1">
-                                  Price: {course.price}
-                                </p>
-                              )}
+                            {course.price !== undefined && (
+                              <p className="text-sm text-gray-600 mt-1">
+                                Price: {course.price}
+                              </p>
+                            )}
                           </div>
 
                           <div className="flex flex-col gap-2 ml-4">
@@ -330,7 +306,7 @@ export default function LandingPage() {
                               href={course.url}
                               target="_blank"
                               rel="noopener noreferrer"
-                              className="inline-block px-3 py-1 text-sm bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition"
+                              className="inline-block px-3 py-1 text-sm bg-gradient-to-r from-indigo-600 to-purple-600 text-white rounded-lg hover:from-indigo-700 hover:to-purple-700 transition"
                             >
                               👉 View
                             </a>
@@ -338,7 +314,7 @@ export default function LandingPage() {
                               onClick={() =>
                                 handleQuickReply(`Tell me about #${i + 1}`)
                               }
-                              className="text-xs px-2 py-1 border rounded"
+                              className="text-xs px-2 py-1 border rounded hover:bg-gray-100 transition"
                             >
                               Details
                             </button>
@@ -347,14 +323,14 @@ export default function LandingPage() {
                       ))}
                     </ul>
 
-                    {/* quick replies for this bot message */}
+                    {/* Quick Replies (restored ✅) */}
                     {msg.quickReplies && msg.quickReplies.length > 0 && (
                       <div className="flex flex-wrap gap-2 mt-3">
                         {msg.quickReplies.slice(0, 6).map((qr, idx) => (
                           <button
                             key={idx}
                             onClick={() => handleQuickReply(qr)}
-                            className="px-3 py-1 bg-white/20 text-white rounded-full text-sm hover:bg-white/30"
+                            className="px-3 py-1 bg-white/20 text-white rounded-full text-sm hover:bg-white/30 transition"
                           >
                             {qr}
                           </button>
@@ -363,11 +339,12 @@ export default function LandingPage() {
                     )}
                   </div>
                 ) : (
+                  // Normal chat messages
                   <div
-                    className={`px-4 py-2 rounded-2xl shadow max-w-md ${
+                    className={`px-5 py-3 rounded-2xl shadow-md max-w-md transition ${
                       msg.role === "user"
-                        ? "bg-indigo-600 text-white rounded-br-none"
-                        : "bg-gray-200 text-gray-800 rounded-bl-none"
+                        ? "bg-gradient-to-r from-indigo-600 to-purple-600 text-white rounded-br-none"
+                        : "bg-white/20 text-white rounded-bl-none backdrop-blur-sm border border-white/30"
                     }`}
                   >
                     {msg.text}
@@ -379,10 +356,10 @@ export default function LandingPage() {
             {/* typing indicator */}
             {isTyping && (
               <div className="my-2 self-start mr-auto">
-                <div className="bg-gray-200 text-gray-800 px-4 py-2 rounded-2xl shadow inline-flex items-center gap-2">
-                  <div className="h-2 w-2 rounded-full bg-gray-600 animate-pulse" />
-                  <div className="h-2 w-2 rounded-full bg-gray-600 animate-pulse delay-150" />
-                  <div className="h-2 w-2 rounded-full bg-gray-600 animate-pulse delay-300" />
+                <div className="bg-white/20 text-white px-4 py-2 rounded-2xl shadow inline-flex items-center gap-2">
+                  <div className="h-2 w-2 rounded-full bg-indigo-400 animate-pulse" />
+                  <div className="h-2 w-2 rounded-full bg-indigo-400 animate-pulse delay-150" />
+                  <div className="h-2 w-2 rounded-full bg-indigo-400 animate-pulse delay-300" />
                 </div>
               </div>
             )}
