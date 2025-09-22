@@ -11,6 +11,7 @@ import Login from "./pages/Login";
 import Signup from "./pages/Signup";
 import Dashboard from "./pages/Dashboard";
 import Landing from "./pages/Landing";
+import TeachersGuides from "./pages/TeachersGuides";
 
 function AppContent() {
   const location = useLocation();
@@ -29,6 +30,7 @@ function AppContent() {
           <Route path="/signup" element={<Signup />} />
           <Route path="/dashboard" element={<Dashboard />} />
           <Route path="/landing" element={<Landing />} />
+          <Route path="/teachers-guides" element={<TeachersGuides />} />
         </Routes>
       </div>
     </>

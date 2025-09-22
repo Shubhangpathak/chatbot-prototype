@@ -8,6 +8,7 @@ export default function Navbar() {
     { name: "Home", to: "/" },
     { name: "Features", to: "/features" },
     { name: "Dashboard", to: "/dashboard" },
+    { name: "Teachers Guides", to: "/teachers-guides" },
     // { name: "Login", to: "/login" },
     // { name: "Sign Up", to: "/signup" },
   ];

@@ -308,7 +308,7 @@ router.post("/chat", async (req, res) => {
       let baseReply = `✨ Based on your selected skills and message, here are some top matches.${explicitNewTopics.length ? `\n💡 I also considered: ${explicitNewTopics.join(", ")}.` : ""}`;
 
       const quickReplies = [
-        "Tell me more",
+        "Tell me more courses",
         "How long does this take?",
         "Is this for beginners?",
         "Show me more"

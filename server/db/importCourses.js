@@ -1,8 +1,35 @@
 const csv = require('csvtojson');
 const mongoose = require('mongoose');
+const path = require('path');
+const fs = require('fs');
 const Course = require('../models/course');
 
-mongoose.connect('mongodb+srv://shubhangpathak:HHgg53bpVPI4CcgY@cluster0.iy54w.mongodb.net/chatbot-proto');
+// Load env from server/.env or repo root .env for seeding script
+(() => {
+  const candidatePaths = [
+    path.resolve(__dirname, '../.env'),
+    path.resolve(__dirname, '../../.env'),
+    path.resolve(process.cwd(), '.env')
+  ];
+  const found = candidatePaths.find(p => {
+    try { return fs.existsSync(p); } catch { return false; }
+  });
+  if (found) {
+    require('dotenv').config({ path: found });
+  } else {
+    require('dotenv').config();
+  }
+})();
+
+const MONGO_URL = process.env.MONGO_URL;
+if (!MONGO_URL) {
+  console.error('Missing MONGO_URL in environment. Create server/.env with MONGO_URL=...');
+  process.exit(1);
+}
+
+mongoose.connect(MONGO_URL);
+
+
 
 csv()
   .fromFile(__dirname + '/Hackathon_Courses_Dataset.csv')

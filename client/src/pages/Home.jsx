@@ -4,6 +4,12 @@ import { BookOpen, Compass, Target } from "lucide-react";
 export default function Home() {
   return (
     <section className="flex flex-col justify-center items-center text-center bg-gradient-to-br from-indigo-50 via-white to-purple-100 min-h-screen w-full">
+      <div className="flex justify-center mb-6">
+        <div className="w-14 h-14 flex items-center justify-center rounded-full bg-indigo-100 text-indigo-700 text-2xl font-bold shadow-sm">
+          M
+        </div>
+                
+      </div>
       {/* Hero Section */}
       <motion.div
         initial={{ opacity: 0, y: 30 }}
